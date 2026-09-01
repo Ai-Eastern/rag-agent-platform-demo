@@ -6,15 +6,16 @@
 - **不是原公司源码。**
 - **不是生产代码，也不代表原生产系统已完成 Python 3.11 升级。**
 
-这是一个企业级项目演进验证口径的个人脱敏 CLI Demo，当前只完成本地 Chroma 持久化、中文向量检索、文档 metadata 过滤和可复现最小验证链路。当前仅有 6 篇虚构知识文档；工具调用、LangGraph 编排、MCP 和评测仍未实现，不能据此宣称该 Demo 已达到企业生产级。
+这是一个企业级项目演进验证口径的个人脱敏 CLI Demo。本仓库当前聚焦 Windows 环境下的中文向量检索、查询阶段 metadata 权限过滤，以及本地工具的参数、权限、错误和幂等治理；不能据此宣称该 Demo 已达到企业生产级。
 
 ## 当前已验证结果
 
-- 依赖锁定并验证：`chromadb==1.5.9`、`sentence-transformers==5.6.0`、`torch==2.12.1`、`transformers==5.12.1`。
+- 依赖锁定并验证：`chromadb==1.5.9`、`sentence-transformers==5.6.0`、`torch==2.12.1`、`transformers==5.12.1`、`pydantic==2.12.5`。
 - 模型固定为 `BAAI/bge-small-zh-v1.5`，revision 为 `7999e1d3359715c523056ef9478215996d62a620`，512 维，CPU 推理。
 - 一条 bootstrap 流程退出码为 0，并完成依赖安装、健康检查、虚构数据生成和 Chroma 入库。
-- 18 个测试退出码为 0；两次独立入库后的 collection count 均为 `6`，说明相同文档 ID 的 upsert 可重复执行。
-- 独立 support 查询的 top1 为 `troubleshooting-guide`，score 为 `0.546444`；public 查询结果 visibility 仅为 `public`；admin 查询结果仅为 `admin-operations`。
+- 33 个测试退出码为 0；两次独立入库后的 collection count 均为 `6`，说明相同文档 ID 的 upsert 可重复执行。
+- 三个身份的独立 CLI 查询已验证：`readonly-demo` 结果仅含 `public`，`support-demo` 仅含 `public/support`，`admin-demo` 可含 `public/support/admin`。support 查询 top1 为 `troubleshooting-guide`，score 为 `0.546444`。
+- 工具测试已覆盖权限前置拦截、Pydantic 参数拒绝、SQLite 唯一约束、同进程重放、两个新 Python 进程重放和双进程并发竞争；同一幂等键只保留一个 `ticket_id`，后续返回 `reused=true`。
 
 这些是当前冻结验收结果，不等同于生产可用性、真实业务权限安全性或完整 RAG 质量评测。
 
@@ -22,7 +23,9 @@
 
 Chroma 是本项目在 Windows 上运行的免 Docker 本地持久化 Demo，便于演示最小检索链路。生产口径是 Milvus 2.x；两者在部署方式、规模、运维和查询能力上存在差异，本 Demo 未在 Milvus 上验证，不能把 Chroma 结果表述为 Milvus 验证结果。
 
-检索函数把 `visibility` 放入 Chroma 的 metadata `where` 条件，在查询阶段限制候选范围。命令行的 `--visibility` 只是检索边界输入，不是可信的角色鉴权；角色到 visibility 的映射及真正的身份认证后续实现。
+检索函数把可信演示上下文产生的 visibility allowlist 放入 Chroma 的 metadata `where` 条件，在查询阶段限制候选范围，不先召回全部文档再删除。CLI 只接受 `--user-id`，不接受调用方自行传入 role 或 visibility。
+
+当前身份层是三个硬编码演示用户的 fail-closed 映射，不是登录系统、Token 校验或生产 IAM。工具入口会再次核验上下文和角色；这只能证明 Demo 内部权限合同有效，不能证明真实身份认证已经完成。
 
 `score = 1 - cosine distance` 是用于相对排序的分数，不是概率，也不是置信度。当前只有 6 篇文档，不能据此宣称通用召回率、Hit@5、MRR 或线上质量。
 
@@ -50,15 +53,32 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 入库完成后，可用新进程执行检索示例：
 
 ```powershell
-& .\.venv\Scripts\python.exe .\scripts\search.py --query "知识中心检索变慢如何处理" --visibility public --visibility support --top-k 5
+& .\.venv\Scripts\python.exe .\scripts\search.py --query "知识中心检索变慢如何处理" --user-id support-demo --top-k 5
 ```
 
-多个可见性值可重复传入 `--visibility`。示例中的值仍是调用方提供的边界，不代表角色已被认证或授权。
+可用演示身份及代码执行的权限如下：
+
+| user_id | 角色 | 可检索 visibility | `get_service_status` | `create_ticket` |
+|---|---|---|---:|---:|
+| `admin-demo` | admin | public、support、admin | 允许 | 允许 |
+| `support-demo` | support | public、support | 允许 | 允许 |
+| `readonly-demo` | readonly | public | 允许 | 拒绝 |
+
+`create_ticket` 是副作用工具，本阶段只通过工具层测试验证，不提供绕过人工复核的公开 CLI。后续接入 LangGraph 时，工具声明中的 `side_effect=true` 将用于把 interrupt 放在实际工具调用之前。
+
+## 工具治理设计
+
+- Pydantic 输入模型拒绝额外字段，统一去除首尾空白，并限制 product ID、摘要和幂等键边界。
+- 工具入口执行权限检查；readonly 或伪造上下文在读取产品、创建目录或打开 SQLite 前即被拒绝。
+- 稳定错误码包括 `validation_error`、`permission_denied`、`product_not_found`、`database_busy` 和 `internal_error`；普通错误消息不包含 SQL 或本机绝对路径。
+- 工单表对 `idempotency_key` 建立 `UNIQUE` 约束。`BEGIN IMMEDIATE`、插入和唯一冲突后的首次 ticket 查询处于同一事务，避免事务外“先查再写”的竞争窗口。
 
 ## 数据与代码位置
 
 - `data/knowledge/`：6 篇带固定 front matter 的虚构知识文档，visibility 分布为 `public=3`、`support=2`、`admin=1`。
 - `src/retrieval/chroma_store.py`：Markdown 解析、400 字符分块、模型加载、归一化 embedding、Chroma upsert/query、metadata 过滤和 score 转换。
+- `src/auth/context.py`：三个虚构演示身份、角色和 visibility allowlist 的不可变映射。
+- `src/tools/platform_tools.py`：工具 Schema、静态声明、权限检查、错误映射、服务状态读取和 SQLite 幂等工单。
 - `scripts/ingest.py`：独立入库 CLI。
 - `scripts/search.py`：独立检索 CLI。
 - `scripts/bootstrap.ps1`：项目环境、依赖、健康检查、数据生成与入库的一键入口。
@@ -71,9 +91,10 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 | Sentence Transformers | 5.6.0 | [PyPI 发行页](https://pypi.org/project/sentence-transformers/5.6.0/) | 2026-06-16 | Apache-2.0 |
 | PyTorch | 2.12.1 | [PyPI 发行页](https://pypi.org/project/torch/2.12.1/) | 2026-06-17 | BSD-style |
 | Transformers | 5.12.1 | [PyPI 发行页](https://pypi.org/project/transformers/5.12.1/) | 2026-06-15 | Apache-2.0 |
+| Pydantic | 2.12.5 | [PyPI 发行页](https://pypi.org/project/pydantic/2.12.5/) | 2025-11-26 | MIT |
 | BGE small zh v1.5 | revision `7999e1d…` | [Hugging Face 固定提交](https://huggingface.co/BAAI/bge-small-zh-v1.5/commit/7999e1d3359715c523056ef9478215996d62a620) | 2023-10-12 | MIT |
 
-项目自身采用 [MIT License](LICENSE)。`requirements.txt` 锁定的是四个直接依赖；传递依赖由 pip 解析，当前还不是完整 lockfile 或 SBOM。
+项目自身采用 [MIT License](LICENSE)。`requirements.txt` 锁定的是五个直接依赖；传递依赖由 pip 解析，当前还不是完整 lockfile 或 SBOM。
 
 ## 版本说明
 
