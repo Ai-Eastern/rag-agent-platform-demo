@@ -8,6 +8,8 @@
 
 这是一个企业级项目演进验证口径的个人脱敏 CLI Demo。本仓库当前聚焦 Windows 环境下的中文向量检索、查询阶段 metadata 权限过滤、本地工具治理，以及 LangGraph 人工复核与跨进程恢复；不能据此宣称该 Demo 已达到企业生产级。
 
+当前数据范围为 24 篇智达科技虚构知识文档和 60 条项目专用虚构评测合同：visibility 为 `public/support/admin=10/8/6`，评测分布为知识检索 24、`get_service_status` 12、`create_ticket` 24（allowed 16、readonly denied 8），即 `24/12/16/8`。Schema 对稳定 ID、角色、工具、权限组合和工具用例文档引用执行 fail-closed 校验。
+
 ## 当前已验证结果
 
 - 8 个直接依赖已锁定并验证：ChromaDB、Sentence Transformers、PyTorch、Transformers、Pydantic、LangGraph 1.2.7、LangGraph SQLite Checkpoint 3.1.0、PyArrow 24.0.0。
@@ -19,6 +21,7 @@
 - 人工复核链路已验证：副作用工具在 `interrupt` 后才执行；第一个进程返回 `interrupted` 且未建单，第二个新进程使用相同 `thread_id` 和 `Command(resume=...)` 恢复。拒绝不建单，批准建单。
 - T2Retrieval 准备器独立测试 15/15 通过；固定 revision 为 `921dd3af6e78d1ae7ee0368aa8d7eaee02c8f08e`，raw 三文件合计 158,846,936 bytes（约 151.5 MiB，页面标称约 159 MB）。本地子集包含 60 个 query 与 3,000 个唯一文档，正例缺失为 0；`corpus.jsonl` SHA-256 为 `6faaf1dd4e344832974667ab827a90a726d5d74795456b11c1df611c2e0dcaa9`，`eval.json` SHA-256 为 `f537297441e329586c7f8a1019aab2ac7716deb61f399c33f61d382103af2c0c`。
 - 独立检索评测运行器专项测试 9/9 通过。第一次真实运行耗时 64.973s，第二个新 Python 进程复用索引耗时 12.066s；专用 collection count 为 3,000，业务 collection 仍为 6。共 60 条 query，命中 59 条，Hit@5 = 0.98333333，MRR = 0.975，唯一失败 query_id 为 `14697`；报告 SHA-256 为 `683bd52c0820e6be805d72aa6f58e577759a9da1308fb28656eeaa6ac1f0faec`。这是封闭子集准备与评测证据，不能填写“准确率98.33%”。
+- 项目专用虚构评测集专项测试 8/8、既有解析分块测试 3/3；隔离真实入库 document_count/chunk_count 均为 24，检索集成测试 8/8，完整测试 68/68 均通过。两个独立目录生成的 27 个文件逐文件 SHA-256 一致；项目评测 JSON SHA-256 为 `4a041860686f00bdfc3fb6a16571babb8c832945da2ecf98c67fa244ef8affb8`，引用闭包与角色可见性违规均为 0。
 
 这些是当前冻结验收结果，不等同于生产可用性、真实业务权限安全性或完整 RAG 质量评测。
 
@@ -30,7 +33,7 @@ Chroma 是本项目在 Windows 上运行的免 Docker 本地持久化 Demo，便
 
 当前身份层是三个硬编码演示用户的 fail-closed 映射，不是登录系统、Token 校验或生产 IAM。工具入口会再次核验上下文和角色；这只能证明 Demo 内部权限合同有效，不能证明真实身份认证已经完成。
 
-`score = 1 - cosine distance` 是用于相对排序的分数，不是概率，也不是置信度。6 篇虚构知识仍用于功能链路；外部 T2Retrieval 60×3,000 子集已准备并完成专项评测，但这是保留全部正例后随机补 distractor 的封闭子集，难度与官方完整 benchmark 不同。高分不能解释为官方 T2Ranking 成绩、权限/工具评测或政企业务 RAG 质量，外部数据也不映射智达科技虚构身份/权限。
+`score = 1 - cosine distance` 是用于相对排序的分数，不是概率，也不是置信度。24 篇虚构知识用于功能链路；项目专用 60 条评测目前只完成数据与 Schema，运行器和实际指标尚未产生。外部 T2Retrieval 60×3,000 子集已准备并完成专项评测，但这是保留全部正例后随机补 distractor 的封闭子集，难度与官方完整 benchmark 不同。其 Hit@5/MRR 不能混为项目 60 条成绩，也不能解释为官方 T2Ranking 成绩、权限/工具评测或政企业务 RAG 质量；外部数据不映射智达科技虚构身份/权限。
 
 ## 外部检索评测数据准备
 
@@ -58,7 +61,9 @@ Chroma 是本项目在 Windows 上运行的免 Docker 本地持久化 Demo，便
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
 ```
 
-该命令会创建或复用项目内 `.venv`，安装锁定依赖，运行健康检查，生成 6 篇虚构知识文档，并将它们写入项目内持久化 Chroma。默认数据位于 `data/`，索引位于 `runtime/chroma/`，均为本地生成物。
+该命令会创建或复用项目内 `.venv`，安装锁定依赖，运行健康检查，生成 24 篇虚构知识文档，并将它们写入项目内持久化 Chroma。默认数据位于 `data/`，索引位于 `runtime/chroma/`，均为本地生成物。
+
+首次模型运行可能联网下载；当前机器在已有缓存下可通过显式离线变量验证，但这不代表陌生机器无需首次联网。
 
 如需显式指定基础解释器，可在命令末尾追加 `-BasePython "<Python 3.11 x64 的 python.exe 完整路径>"`。
 
@@ -114,7 +119,8 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 
 ## 数据与代码位置
 
-- `data/knowledge/`：6 篇带固定 front matter 的虚构知识文档，visibility 分布为 `public=3`、`support=2`、`admin=1`。
+- `data/knowledge/`：24 篇带固定 front matter 的虚构知识文档，visibility 分布为 `public=10`、`support=8`、`admin=6`。
+- `data/eval/project_eval.json`：60 条项目专用虚构评测合同，包含知识检索、服务状态和工单权限用例。
 - `src/retrieval/chroma_store.py`：Markdown 解析、400 字符分块、模型加载、归一化 embedding、Chroma upsert/query、metadata 过滤和 score 转换。
 - `src/eval/retrieval_eval.py`：T2Retrieval 子集的 corpus 校验、独立 collection 检索与 Hit@5/MRR 计算。
 - `src/auth/context.py`：三个虚构演示身份、角色和 visibility allowlist 的不可变映射。
