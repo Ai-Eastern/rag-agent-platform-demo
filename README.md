@@ -17,7 +17,8 @@
 - 三个身份的独立 CLI 查询已验证：`readonly-demo` 结果仅含 `public`，`support-demo` 仅含 `public/support`，`admin-demo` 可含 `public/support/admin`。support 查询 top1 为 `troubleshooting-guide`，score 为 `0.546444`。
 - 工具与工作流已验证权限前置拦截、Pydantic 参数拒绝、SQLite 唯一约束、同进程重放、两个新 Python 进程重放和双进程并发竞争；同一幂等键只保留一个 `ticket_id`，后续返回 `reused=true`。
 - 人工复核链路已验证：副作用工具在 `interrupt` 后才执行；第一个进程返回 `interrupted` 且未建单，第二个新进程使用相同 `thread_id` 和 `Command(resume=...)` 恢复。拒绝不建单，批准建单。
-- T2Retrieval 准备器独立测试 15/15 通过；固定 revision 为 `921dd3af6e78d1ae7ee0368aa8d7eaee02c8f08e`，raw 三文件合计 158,846,936 bytes（约 151.5 MiB，页面标称约 159 MB）。本地子集包含 60 个 query 与 3,000 个唯一文档，正例缺失为 0；`corpus.jsonl` SHA-256 为 `6faaf1dd4e344832974667ab827a90a726d5d74795456b11c1df611c2e0dcaa9`，`eval.json` SHA-256 为 `f537297441e329586c7f8a1019aab2ac7716deb61f399c33f61d382103af2c0c`。这些是子集准备证据，尚未运行 Hit@5/MRR，也不填写预设分数。
+- T2Retrieval 准备器独立测试 15/15 通过；固定 revision 为 `921dd3af6e78d1ae7ee0368aa8d7eaee02c8f08e`，raw 三文件合计 158,846,936 bytes（约 151.5 MiB，页面标称约 159 MB）。本地子集包含 60 个 query 与 3,000 个唯一文档，正例缺失为 0；`corpus.jsonl` SHA-256 为 `6faaf1dd4e344832974667ab827a90a726d5d74795456b11c1df611c2e0dcaa9`，`eval.json` SHA-256 为 `f537297441e329586c7f8a1019aab2ac7716deb61f399c33f61d382103af2c0c`。
+- 独立检索评测运行器专项测试 9/9 通过。第一次真实运行耗时 64.973s，第二个新 Python 进程复用索引耗时 12.066s；专用 collection count 为 3,000，业务 collection 仍为 6。共 60 条 query，命中 59 条，Hit@5 = 0.98333333，MRR = 0.975，唯一失败 query_id 为 `14697`；报告 SHA-256 为 `683bd52c0820e6be805d72aa6f58e577759a9da1308fb28656eeaa6ac1f0faec`。这是封闭子集准备与评测证据，不能填写“准确率98.33%”。
 
 这些是当前冻结验收结果，不等同于生产可用性、真实业务权限安全性或完整 RAG 质量评测。
 
@@ -29,7 +30,7 @@ Chroma 是本项目在 Windows 上运行的免 Docker 本地持久化 Demo，便
 
 当前身份层是三个硬编码演示用户的 fail-closed 映射，不是登录系统、Token 校验或生产 IAM。工具入口会再次核验上下文和角色；这只能证明 Demo 内部权限合同有效，不能证明真实身份认证已经完成。
 
-`score = 1 - cosine distance` 是用于相对排序的分数，不是概率，也不是置信度。6 篇虚构知识仍用于功能链路；外部 T2Retrieval 60×3,000 子集已准备，但评测脚本尚未接入、尚未产生指标，不能称官方完整 T2Ranking 分数或政企业务质量。
+`score = 1 - cosine distance` 是用于相对排序的分数，不是概率，也不是置信度。6 篇虚构知识仍用于功能链路；外部 T2Retrieval 60×3,000 子集已准备并完成专项评测，但这是保留全部正例后随机补 distractor 的封闭子集，难度与官方完整 benchmark 不同。高分不能解释为官方 T2Ranking 成绩、权限/工具评测或政企业务 RAG 质量，外部数据也不映射智达科技虚构身份/权限。
 
 ## 外部检索评测数据准备
 
@@ -40,6 +41,14 @@ Chroma 是本项目在 Windows 上运行的免 Docker 本地持久化 Demo，便
 ```
 
 产物位于 `data/external/t2retrieval/raw` 与 `data/external/t2retrieval/subset`。准备器校验文件 size 与 SHA-256，使用项目内路径、流式大小上限、`.part` 文件和原子替换；固定 seed 抽样并先完成正例闭包，manifest 最后提交。外部数据来自搜索日志或网页文本；Apache-2.0 不自动消除隐私和第三方内容边界。本子集只用于技术检索对照，不映射用户、权限或工具评测。
+
+运行评测：
+
+```powershell
+& .\.venv\Scripts\python.exe .\scripts\run_eval.py
+```
+
+报告位于 `runtime/eval/t2retrieval/report.json`。评测按 ranked `doc_id` 出现顺序去重后取 top5；Hit@5 为 59/60，MRR 取首个 expected 命中排名的倒数，无命中为 0；唯一失败 query_id 为 `14697`。上述结果来自 60 query/3,000 doc 封闭子集，不能视为官方完整 T2Ranking 分数、权限/工具评测或政企业务 RAG 质量。
 
 ## 快速开始
 
@@ -107,12 +116,14 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 
 - `data/knowledge/`：6 篇带固定 front matter 的虚构知识文档，visibility 分布为 `public=3`、`support=2`、`admin=1`。
 - `src/retrieval/chroma_store.py`：Markdown 解析、400 字符分块、模型加载、归一化 embedding、Chroma upsert/query、metadata 过滤和 score 转换。
+- `src/eval/retrieval_eval.py`：T2Retrieval 子集的 corpus 校验、独立 collection 检索与 Hit@5/MRR 计算。
 - `src/auth/context.py`：三个虚构演示身份、角色和 visibility allowlist 的不可变映射。
 - `src/tools/platform_tools.py`：工具 Schema、静态声明、权限检查、错误映射、服务状态读取和 SQLite 幂等工单。
 - `src/agent/workflow.py`：StateGraph 节点、可信上下文、检索、工具决策、权限、人工复核、工具执行、回答和 SQLite checkpoint。
 - `scripts/ingest.py`：独立入库 CLI。
 - `scripts/search.py`：独立检索 CLI。
 - `scripts/prepare_t2retrieval.py`：固定 revision 的外部检索评测子集准备 CLI。
+- `scripts/run_eval.py`：外部检索子集评测 CLI，输出 JSON 报告。
 - `scripts/demo.py`：`start`/`resume` 两命令的公开工作流 CLI；异常只输出通用“工作流执行失败”。
 - `scripts/bootstrap.ps1`：项目环境、依赖、健康检查、数据生成与入库的一键入口。
 
