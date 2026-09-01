@@ -4,3 +4,5 @@ sentence-transformers==5.6.0
 torch==2.12.1
 transformers==5.12.1
 pydantic==2.12.5
+langgraph==1.2.7
+langgraph-checkpoint-sqlite==3.1.0

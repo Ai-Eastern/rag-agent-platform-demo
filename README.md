@@ -6,16 +6,17 @@
 - **不是原公司源码。**
 - **不是生产代码，也不代表原生产系统已完成 Python 3.11 升级。**
 
-这是一个企业级项目演进验证口径的个人脱敏 CLI Demo。本仓库当前聚焦 Windows 环境下的中文向量检索、查询阶段 metadata 权限过滤，以及本地工具的参数、权限、错误和幂等治理；不能据此宣称该 Demo 已达到企业生产级。
+这是一个企业级项目演进验证口径的个人脱敏 CLI Demo。本仓库当前聚焦 Windows 环境下的中文向量检索、查询阶段 metadata 权限过滤、本地工具治理，以及 LangGraph 人工复核与跨进程恢复；不能据此宣称该 Demo 已达到企业生产级。
 
 ## 当前已验证结果
 
-- 依赖锁定并验证：`chromadb==1.5.9`、`sentence-transformers==5.6.0`、`torch==2.12.1`、`transformers==5.12.1`、`pydantic==2.12.5`。
+- 7 个直接依赖已锁定并验证：ChromaDB、Sentence Transformers、PyTorch、Transformers、Pydantic、LangGraph 1.2.7、LangGraph SQLite Checkpoint 3.1.0。
 - 模型固定为 `BAAI/bge-small-zh-v1.5`，revision 为 `7999e1d3359715c523056ef9478215996d62a620`，512 维，CPU 推理。
 - 一条 bootstrap 流程退出码为 0，并完成依赖安装、健康检查、虚构数据生成和 Chroma 入库。
-- 33 个测试退出码为 0；两次独立入库后的 collection count 均为 `6`，说明相同文档 ID 的 upsert 可重复执行。
+- 根验收 43 项退出码为 0；其中新增 10 项工作流与双进程证据。两次独立入库后的 collection count 均为 `6`，说明相同文档 ID 的 upsert 可重复执行。
 - 三个身份的独立 CLI 查询已验证：`readonly-demo` 结果仅含 `public`，`support-demo` 仅含 `public/support`，`admin-demo` 可含 `public/support/admin`。support 查询 top1 为 `troubleshooting-guide`，score 为 `0.546444`。
-- 工具测试已覆盖权限前置拦截、Pydantic 参数拒绝、SQLite 唯一约束、同进程重放、两个新 Python 进程重放和双进程并发竞争；同一幂等键只保留一个 `ticket_id`，后续返回 `reused=true`。
+- 工具与工作流已验证权限前置拦截、Pydantic 参数拒绝、SQLite 唯一约束、同进程重放、两个新 Python 进程重放和双进程并发竞争；同一幂等键只保留一个 `ticket_id`，后续返回 `reused=true`。
+- 人工复核链路已验证：副作用工具在 `interrupt` 后才执行；第一个进程返回 `interrupted` 且未建单，第二个新进程使用相同 `thread_id` 和 `Command(resume=...)` 恢复。拒绝不建单，批准建单。
 
 这些是当前冻结验收结果，不等同于生产可用性、真实业务权限安全性或完整 RAG 质量评测。
 
@@ -64,7 +65,25 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 | `support-demo` | support | public、support | 允许 | 允许 |
 | `readonly-demo` | readonly | public | 允许 | 拒绝 |
 
-`create_ticket` 是副作用工具，本阶段只通过工具层测试验证，不提供绕过人工复核的公开 CLI。后续接入 LangGraph 时，工具声明中的 `side_effect=true` 将用于把 interrupt 放在实际工具调用之前。
+`create_ticket` 是副作用工具，公开 CLI 通过 LangGraph 人工复核后才允许调用；不能绕过复核直接创建。普通知识问答和 `get_service_status` 不触发 interrupt；readonly 创建工单会在复核/工具前被拒绝。
+
+## 人工复核演示
+
+第一个 PowerShell 进程启动工作流，在副作用调用前暂停：
+
+```powershell
+& .\.venv\Scripts\python.exe .\scripts\demo.py start --thread-id demo-ticket-001 --user-id support-demo --query "请为智能助手创建工单" --product-id smart-assist --idempotency-key demo-ticket-001
+```
+
+预期返回 `status=interrupted`；此时 checkpoint 已保存，但尚未创建工单。请在新的 PowerShell 进程中用相同 `thread_id` 恢复：
+
+```powershell
+& .\.venv\Scripts\python.exe .\scripts\demo.py resume --thread-id demo-ticket-001 --decision approve
+```
+
+将 `approve` 改为 `reject` 可验证人工拒绝，结果是不创建工单。`start` 与 `resume` 必须复用同一个 `thread_id`；该标识用于定位本地 SQLite checkpoint。
+
+默认 checkpoint 数据库为 `runtime/checkpoints.sqlite`，默认工单数据库为 `runtime/tickets.sqlite`；二者都只用于本地 Demo。
 
 ## 工具治理设计
 
@@ -79,8 +98,10 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 - `src/retrieval/chroma_store.py`：Markdown 解析、400 字符分块、模型加载、归一化 embedding、Chroma upsert/query、metadata 过滤和 score 转换。
 - `src/auth/context.py`：三个虚构演示身份、角色和 visibility allowlist 的不可变映射。
 - `src/tools/platform_tools.py`：工具 Schema、静态声明、权限检查、错误映射、服务状态读取和 SQLite 幂等工单。
+- `src/agent/workflow.py`：StateGraph 节点、可信上下文、检索、工具决策、权限、人工复核、工具执行、回答和 SQLite checkpoint。
 - `scripts/ingest.py`：独立入库 CLI。
 - `scripts/search.py`：独立检索 CLI。
+- `scripts/demo.py`：`start`/`resume` 两命令的公开工作流 CLI；异常只输出通用“工作流执行失败”。
 - `scripts/bootstrap.ps1`：项目环境、依赖、健康检查、数据生成与入库的一键入口。
 
 ## 依赖、来源与许可证
@@ -92,12 +113,14 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 | PyTorch | 2.12.1 | [PyPI 发行页](https://pypi.org/project/torch/2.12.1/) | 2026-06-17 | BSD-style |
 | Transformers | 5.12.1 | [PyPI 发行页](https://pypi.org/project/transformers/5.12.1/) | 2026-06-15 | Apache-2.0 |
 | Pydantic | 2.12.5 | [PyPI 发行页](https://pypi.org/project/pydantic/2.12.5/) | 2025-11-26 | MIT |
+| LangGraph | 1.2.7 | [PyPI 发行页](https://pypi.org/project/langgraph/1.2.7/) | 2026-06-30 | MIT |
+| LangGraph Checkpoint SQLite | 3.1.0 | [PyPI 发行页](https://pypi.org/project/langgraph-checkpoint-sqlite/3.1.0/) | 2026-05-12 | MIT |
 | BGE small zh v1.5 | revision `7999e1d…` | [Hugging Face 固定提交](https://huggingface.co/BAAI/bge-small-zh-v1.5/commit/7999e1d3359715c523056ef9478215996d62a620) | 2023-10-12 | MIT |
 
-项目自身采用 [MIT License](LICENSE)。`requirements.txt` 锁定的是五个直接依赖；传递依赖由 pip 解析，当前还不是完整 lockfile 或 SBOM。
+项目自身采用 [MIT License](LICENSE)。`requirements.txt` 锁定 7 个直接依赖；传递依赖由 pip 解析，当前还不是完整 lockfile 或 SBOM。
 
 ## 版本说明
 
-历史企业项目在 2024—2025 年期间采用 Python 3.10、早期 LangGraph 0.x、Milvus 2.x 和 BGE-M3 口径。当前脱敏验证 Demo 的实际环境为 Python 3.11.16 x64，用于验证从 Python 3.10 向 Python 3.11 迁移时，当前依赖组合在 Windows 本地环境中的兼容性与核心链路。
+历史企业项目在 2024—2025 年期间采用 Python 3.10、早期 LangGraph 0.x、Milvus 2.x 和 BGE-M3 口径。当前脱敏验证 Demo 的实际环境为 Python 3.11.16 x64，LangGraph 使用演进后的 `1.2.7` interrupt/checkpointer API，用于验证当前依赖组合在 Windows 本地环境中的兼容性与核心链路。
 
-当前证据只证明该 Demo 环境能够在 Python 3.11 本地运行并通过已列测试，不证明原生产环境已经升级到 Python 3.11，也不证明生产迁移验收已经完成。Chroma 仍只是 Windows 与免 Docker 约束下的本地替代方案，本 Demo 没有完成 Milvus 迁移验证。后续 LangGraph interrupt/checkpointer 和 MCP SDK 会采用其演进后的 API 写法，因此不能把 Demo API、版本或单机部署方式等同于历史生产实现。
+当前证据只证明该 Demo 在 Python 3.11 本地通过已列验证，不证明原生产环境已经升级到 Python 3.11，也不证明生产迁移验收已经完成。LangGraph 1.2.7 与 SQLite checkpoint 3.1.0 只证明本地 Demo 的 interrupt、恢复和检查点链路，不证明生产升级或生产级持久化。Chroma 仍只是 Windows 与免 Docker 约束下的本地替代方案，本 Demo 没有完成 Milvus 迁移验证。
