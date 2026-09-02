@@ -28,6 +28,7 @@ class ToolErrorCode(str, Enum):
     PRODUCT_NOT_FOUND = "product_not_found"
     DATABASE_BUSY = "database_busy"
     INTERNAL_ERROR = "internal_error"
+    TIMEOUT = "timeout"
 
 
 class ToolError(Exception):

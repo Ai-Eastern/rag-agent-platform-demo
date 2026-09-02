@@ -20,6 +20,7 @@ from src.tools.platform_tools import (
     ServiceStatusInput,
     TOOL_SPECS,
     ToolError,
+    ToolErrorCode,
     create_ticket,
     get_service_status,
 )
@@ -136,6 +137,13 @@ def _execute_tool_node(state: WorkflowState) -> dict[str, object]:
         else:
             result = get_service_status(context, str(state["tool_args"]["product_id"]))
         return {"tool_result": result}
+    except TimeoutError as exc:
+        return {
+            "tool_error": {
+                "code": ToolErrorCode.TIMEOUT.value,
+                "message": "工具执行超时。",
+            }
+        }
     except ToolError as exc:
         return {"tool_error": {"code": exc.code.value, "message": exc.message}}
 
