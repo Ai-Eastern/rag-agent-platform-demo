@@ -1,16 +1,47 @@
 # RAG Agent 工具协同平台 Demo
 
-- **基于企业级 RAG Agent 工具协同项目演进背景的个人脱敏复现 Demo。**
-- **用于验证 Python 3.10 → Python 3.11 技术栈迭代后的依赖兼容性、Windows 本地运行和核心链路。**
-- **全部数据均为虚构和脱敏数据。**
-- **不是原公司源码。**
-- **不是生产代码，也不代表原生产系统已完成 Python 3.11 升级。**
+面向政企/企业内部支持场景的 RAG Agent 工具协同 Demo，不是单纯工单审批系统。
 
-这是一个企业级项目演进验证口径的个人脱敏 CLI Demo。本仓库当前聚焦 Windows 环境下的中文向量检索、查询阶段 metadata 权限过滤、本地工具治理，以及 LangGraph 人工复核与跨进程恢复；不能据此宣称该 Demo 已达到企业生产级。
+RAG Agent 会先在用户获准访问的企业知识中寻找依据，再判断是直接回答、查询状态，还是申请获批的动作。
+
+项目说明：这是个人脱敏复现 Demo，数据均为虚构；用于展示 Windows/Python 3.11 本地工程能力，不是原公司源码或生产系统，不代表真实客户、真实数据、生产 IAM、GUI/设备或用户验收。
+
+## 项目能力与个人贡献
+
+使用者包括内部员工、客服/运维支持和管理员。业务链路是：员工提问 → 权限过滤检索 → Agent 判断只读回答/查询状态/发起工单 → 副作用前人工审批 → 执行或拒绝。
+
+已完成的工程闭环：Windows/Python 3.11 本地运行、中文 RAG 检索、权限隔离、LangGraph HITL（人工介入复核）、幂等工单（重复提交不会重复建单）、本地 stdio 只读 MCP（本地进程按标准协议发现并调用只读工具），以及测试、评测和 V1 发布记录。
+
+可直接演示：
+
+- 检索：按用户身份过滤可见知识。
+- 权限隔离：`readonly-demo`、`support-demo`、`admin-demo` 的可见范围不同。
+- 服务状态：通过只读 `get_service_status` 查询产品状态。
+- 人工审批工单：审批后执行，拒绝则不创建。
+- MCP smoke：本地 stdio 发现并调用只读工具。
+
+### 3 分钟演示
+
+如果项目已初始化，在项目根目录执行以下快速路径：
+
+```powershell
+& .\.venv\Scripts\python.exe .\scripts\search.py --query "知识中心检索变慢如何处理" --user-id support-demo --top-k 5
+& .\.venv\Scripts\python.exe .\scripts\demo.py start --thread-id demo-ticket-001 --user-id support-demo --query "请为智能助手创建工单" --product-id smart-assist --idempotency-key demo-ticket-001
+& .\.venv\Scripts\python.exe .\scripts\demo.py resume --thread-id demo-ticket-001 --decision approve
+& .\.venv\Scripts\python.exe .\scripts\mcp_smoke.py
+```
+
+首次运行或未初始化环境，先执行既有 bootstrap；它可能安装锁定依赖、生成虚构数据并触发首次模型下载，耗时取决于本机环境：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
+```
+
+`start` 会在副作用前进入人工复核，需用相同 `thread_id` 执行 `resume`；上述命令不绕过审批。
 
 ## V1 Platform Core（v0.1.0-platform-core）
 
-本版本定位为个人脱敏的 Windows/Python 3.11 平台核心 CLI Demo：复用 `scripts\search.py`、`scripts\demo.py` 和 `scripts\mcp_smoke.py`，展示检索、权限边界、人工复核恢复和本地 stdio MCP 只读工具协同。它是可复现的本地演示入口，不是生产服务、GUI、设备客户端或真实业务系统。
+本版本是个人脱敏的 Windows/Python 3.11 平台核心 CLI Demo：复用 `scripts\search.py`、`scripts\demo.py` 和 `scripts\mcp_smoke.py`，展示检索、权限边界、人工复核恢复和本地 stdio MCP 只读工具协同。技术证据、评测数字、依赖来源和限制如下保留。
 
 ### 可复现的现有 CLI 顺序
 
