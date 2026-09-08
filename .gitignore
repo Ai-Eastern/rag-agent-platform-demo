@@ -1,4 +1,6 @@
 # Project-local tooling and environments
+/.codex-control/
+/.workbuddy/
 /.tooling/
 /.venv/
 /.cache/
@@ -11,8 +13,10 @@
 /outputs/
 /logs/
 /data/
-/tests/
-/docs/
+/tests/*
+/docs/*
+!/tests/test_mcp_server.py
+!/docs/学习笔记-MCP接入.md
 
 # Python
 __pycache__/

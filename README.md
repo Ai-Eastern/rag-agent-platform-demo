@@ -8,11 +8,37 @@
 
 这是一个企业级项目演进验证口径的个人脱敏 CLI Demo。本仓库当前聚焦 Windows 环境下的中文向量检索、查询阶段 metadata 权限过滤、本地工具治理，以及 LangGraph 人工复核与跨进程恢复；不能据此宣称该 Demo 已达到企业生产级。
 
+## V1 Platform Core（v0.1.0-platform-core）
+
+本版本定位为个人脱敏的 Windows/Python 3.11 平台核心 CLI Demo：复用 `scripts\search.py`、`scripts\demo.py` 和 `scripts\mcp_smoke.py`，展示检索、权限边界、人工复核恢复和本地 stdio MCP 只读工具协同。它是可复现的本地演示入口，不是生产服务、GUI、设备客户端或真实业务系统。
+
+### 可复现的现有 CLI 顺序
+
+在项目根目录、PowerShell 和 Python 3.11 x64 环境中执行：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
+& .\.venv\Scripts\python.exe .\scripts\search.py --query "知识中心检索变慢如何处理" --user-id support-demo --top-k 5
+& .\.venv\Scripts\python.exe .\scripts\demo.py start --thread-id demo-ticket-001 --user-id support-demo --query "请为智能助手创建工单" --product-id smart-assist --idempotency-key demo-ticket-001
+& .\.venv\Scripts\python.exe .\scripts\demo.py resume --thread-id demo-ticket-001 --decision approve
+& .\.venv\Scripts\python.exe .\scripts\mcp_smoke.py
+```
+
+`start` 预计在人工复核前返回 `interrupted`；需要批准时再执行 `resume`。bootstrap 可能触发首次模型下载；上述顺序只复用现有脚本，不增加 CLI wrapper 或依赖。每次运行的本地数据、Chroma、checkpoint 和 tickets 均位于项目路径下。
+
+### V1 发布前 bounded verification
+
+技术负责人转交的验证包记录：health check exit 0（Python 3.11.16 x64，托管路径均为项目内）；`compileall src/scripts/tests` exit 0；focused MCP unittest exit 0（`Ran 2 tests`、`OK`、failures=0）；local stdio MCP smoke exit 0，仅暴露 `get_service_status`，返回 `status=ok`、`field_count=4`；复制快照后的离线 search CLI exit 0（`support-demo`、`[public,support]`、5 条结果），且源 `runtime/chroma` 五文件 SHA manifest 前后一致；`demo.py --help` exit 0，仅确认公开 `start`/`resume` 命令，未执行工作流。
+
+上述是本次限定路径的 `CHECK_LINT + focused TEST + read-only CLI + local stdio SERVICE_API` 证据。health check 不单独证明 RAG、LangGraph、MCP、模型或外部服务；也不证明生产、GUI/设备、真实 MCP 客户端、外部 API/服务、真实数据、用户验收或更广泛的 `create_ticket` 不可达性。
+
+版本、历史验证记录和限制见 [CHANGELOG.md](CHANGELOG.md)。
+
 当前数据范围为 24 篇智达科技虚构知识文档和 60 条项目专用虚构评测合同：visibility 为 `public/support/admin=10/8/6`，评测分布为知识检索 24、`get_service_status` 12、`create_ticket` 24（allowed 16、readonly denied 8），即 `24/12/16/8`。Schema 对稳定 ID、角色、工具、权限组合和工具用例文档引用执行 fail-closed 校验。
 
 ## 当前已验证结果
 
-- 8 个直接依赖已锁定并验证：ChromaDB、Sentence Transformers、PyTorch、Transformers、Pydantic、LangGraph 1.2.7、LangGraph SQLite Checkpoint 3.1.0、PyArrow 24.0.0。
+- 9 个直接依赖已锁定并验证：ChromaDB、Sentence Transformers、PyTorch、Transformers、Pydantic、LangGraph 1.2.7、LangGraph SQLite Checkpoint 3.1.0、PyArrow 24.0.0、MCP Python SDK 2.1.1。
 - 模型固定为 `BAAI/bge-small-zh-v1.5`，revision 为 `7999e1d3359715c523056ef9478215996d62a620`，512 维，CPU 推理。
 - 一条 bootstrap 流程退出码为 0，并完成依赖安装、健康检查、虚构数据生成和 Chroma 入库。
 - 根验收 43 项退出码为 0；其中新增 10 项工作流与双进程证据。两次独立入库后的 collection count 均为 `6`，说明相同文档 ID 的 upsert 可重复执行。
@@ -104,6 +130,25 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 
 `create_ticket` 是副作用工具，公开 CLI 通过 LangGraph 人工复核后才允许调用；不能绕过复核直接创建。普通知识问答和 `get_service_status` 不触发 interrupt；readonly 创建工单会在复核/工具前被拒绝。
 
+## MCP 只读接入 Demo
+
+本 Demo 使用官方 Python MCP SDK `mcp==2.1.1`（v2 稳定线，Python `>=3.10`，MIT）。该包通过 PyPI Trusted Publishing 发布，来源提交为 `0921d94a74db900dccd2d534842aa7b6160542d2`；参考 [Python SDK 仓库](https://github.com/modelcontextprotocol/python-sdk) 与 [PyPI 发行页](https://pypi.org/project/mcp/2.1.1/)。
+
+MCP 适配器只注册一个只读工具：`get_service_status`。本地默认使用 stdio 启动：
+
+```powershell
+& .\.venv\Scripts\python.exe .\src\mcp_server.py
+& .\.venv\Scripts\python.exe .\scripts\mcp_smoke.py
+```
+
+调用方只提交 `user_id` 和 `product_id`。可信身份路径是 `user_id -> resolve_user -> get_service_status`：角色与 visibility allowlist 由本地 fail-closed 映射产生，调用方不能自行提交 role 或 visibility。工具 annotations 只是客户端提示，不是权限 enforcement；真正的身份与权限检查仍由现有工具代码执行。
+
+这里不暴露 `create_ticket`，不绕过 LangGraph 人工复核，也不接入第三方客户端、生产 IAM、GUI、设备或真实业务 API。静态说明本身不构成测试/服务证据；下方结论只依据技术负责人登记的新鲜 D4 命令，仍不证明生产安全性或用户验收。
+
+### 2026-09-05 本地验证结论
+
+技术负责人登记：`TL-COMPILE` exit 0；focused unittest exit 0，`Ran 2 tests`、`OK`；local stdio smoke exit 0，返回 `{"status":"ok","tool_names":["get_service_status"],"call":{"tool":"get_service_status","user_id":"readonly-demo","product_id":"smart-assist","field_count":4}}`；`TL-BOUNDARY-STATIC` exit 0。该证据层级为 `CHECK_LINT + TEST + 本地 stdio SERVICE_API`，不证明第三方客户端生态、生产安全/IAM、GUI、设备、真实数据/外部业务 API 或用户验收。
+
 ## 人工复核演示
 
 第一个 PowerShell 进程启动工作流，在副作用调用前暂停：
@@ -159,7 +204,7 @@ Windows 没有 symlink 权限时，Hugging Face 缓存仍可工作，但可能�
 | PyArrow | 24.0.0 | [PyPI 发行页](https://pypi.org/project/pyarrow/24.0.0/) | 2026-04-21 | Apache-2.0 |
 | BGE small zh v1.5 | revision `7999e1d…` | [Hugging Face 固定提交](https://huggingface.co/BAAI/bge-small-zh-v1.5/commit/7999e1d3359715c523056ef9478215996d62a620) | 2023-10-12 | MIT |
 
-项目自身采用 [MIT License](LICENSE)。`requirements.txt` 锁定 8 个直接依赖；传递依赖由 pip 解析，当前还不是完整 lockfile 或 SBOM。
+项目自身采用 [MIT License](LICENSE)。`requirements.txt` 锁定 9 个直接依赖；传递依赖由 pip 解析，当前还不是完整 lockfile 或 SBOM。
 
 ## 版本说明
 
